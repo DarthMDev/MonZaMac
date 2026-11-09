@@ -4,7 +4,10 @@
 // render thread inside backend_present, after the game image, into the same drawable.
 #ifdef __APPLE__
 #import <Metal/Metal.h>
+#include <TargetConditionals.h>
+#if !TARGET_OS_IOS
 #import <AppKit/AppKit.h>
+#endif
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #endif
 #include <SDL3/SDL.h>
@@ -85,6 +88,11 @@ static void catalog_update_start(void) {
     }});
 }
 static void recipe_export_dialog(void) {  // main thread; the game never uploads this file
+#if TARGET_OS_IOS
+    pthread_mutex_lock(&recipe_message_lock);
+    snprintf(recipe_export_message, sizeof recipe_export_message, "Shader recipe export is unavailable in the iOS preview.");
+    pthread_mutex_unlock(&recipe_message_lock);
+#else
     if (g_recipe_export_busy.exchange(true)) return;
     input_reset();
     NSSavePanel *panel = [NSSavePanel savePanel];
@@ -106,6 +114,7 @@ static void recipe_export_dialog(void) {  // main thread; the game never uploads
             g_recipe_export_busy = false;
         }});
     }];
+#endif
 }
 #endif
 

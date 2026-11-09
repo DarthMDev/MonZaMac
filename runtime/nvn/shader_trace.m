@@ -1,8 +1,7 @@
 // Local evidence collection, not a memory-taint engine: address matches are candidates, not proven file origins.
 #import <Foundation/Foundation.h>
 #include <CommonCrypto/CommonDigest.h>
-#include <mach/mach.h>
-#include <mach/mach_vm.h>
+#include "../platform/apple_memory.h"
 #include <stdatomic.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -120,8 +119,8 @@ static NSArray *trace_stack(Cpu *cpu) {
         const char *name = loader_symbol_at(pc, &offset);
         [pcs addObject:@{@"pc": trace_hex(pc), @"symbol": name ? @(name) : @"?", @"symbol_offset": @(offset)}];
         if (fp < GUEST_LO || fp > GUEST_HI - 16 || (fp & 15)) break;
-        uint64_t pair[2]; mach_vm_size_t got = 0;
-        if (mach_vm_read_overwrite(mach_task_self(), fp, sizeof pair, (mach_vm_address_t)pair, &got) != KERN_SUCCESS || got != sizeof pair) break;
+        uint64_t pair[2];
+        if (!apple_read_memory(fp, sizeof pair, pair)) break;
         if (pair[0] <= fp || pair[0] - fp > (16u << 20)) break;
         fp = pair[0]; pc = pair[1];
     }
@@ -135,8 +134,8 @@ void shader_trace_stage(Cpu *cpu, const NvnShaderStage *s, uint64_t program) {
     if (size < 16 || size > (16u << 20) || s->code_addr < GUEST_LO ||
         s->code_addr >= GUEST_HI || size > GUEST_HI - s->code_addr) return;
     @autoreleasepool {
-        NSMutableData *bytes = [NSMutableData dataWithLength:(NSUInteger)size]; mach_vm_size_t got = 0;
-        if (mach_vm_read_overwrite(mach_task_self(), s->code_addr, size, (mach_vm_address_t)bytes.mutableBytes, &got) != KERN_SUCCESS || got != size) return;
+        NSMutableData *bytes = [NSMutableData dataWithLength:(NSUInteger)size];
+        if (!apple_read_memory(s->code_addr, size, bytes.mutableBytes)) return;
         NSString *hash = trace_hash(bytes);
         if (trace_targets && ![trace_targets containsObject:hash]) return;
         NSString *seen_key = trace_timing_only ? [hash stringByAppendingString:trace_hex(s->code_addr)] : hash;

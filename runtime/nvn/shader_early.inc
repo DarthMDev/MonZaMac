@@ -102,8 +102,8 @@ void renderer_shader_registered(const NvnShaderStage *s) {
     size_t size = (size_t)s->const_offset + s->const_size;
     if (size > GUEST_HI - s->code_addr) return;
     @autoreleasepool {
-        NSMutableData *bytes = [NSMutableData dataWithLength:size]; mach_vm_size_t got = 0;
-        if (mach_vm_read_overwrite(mach_task_self(), s->code_addr, size, (mach_vm_address_t)bytes.mutableBytes, &got) != KERN_SUCCESS || got != size) return;
+        NSMutableData *bytes = [NSMutableData dataWithLength:size];
+        if (!apple_read_memory(s->code_addr, size, bytes.mutableBytes)) return;
         NSString *hash = prep_digest(bytes);
         if (![early_targets containsObject:hash]) return;
         pthread_mutex_lock(&early_lock);

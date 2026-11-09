@@ -5,11 +5,15 @@
 // Skipped with --play, LARECOMP_NO_LAUNCHER=1, or any scripted test run (LARECOMP_INPUT): tests boot straight in.
 // The in-game menu's "Title screen" comes back here without leaving the process (runtime/main.c reboots the game).
 #ifdef __APPLE__
+#include <TargetConditionals.h>
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 #endif
 #include <SDL3/SDL.h>
+#ifndef TARGET_OS_IOS
+#define TARGET_OS_IOS 0
+#endif
 #include <ctype.h>
 #include <dirent.h>
 #include <ftw.h>
@@ -200,9 +204,20 @@ static std::string check_copied_files(const std::string &root) {
 
 // "" = ready to play, else what is wrong
 static std::string check_game_files(const std::string &root) {
+#if TARGET_OS_IOS && !defined(MONZA_IOS_PRIVATE_GAME)
+    (void)root;
+    return "iOS launcher preview";
+#else
     std::string why = check_copied_files(root);
+#if TARGET_OS_IOS
+    extern bool g_ios_guest_reserved;
+    if (why.empty() && !gamelib_present(root.c_str())) return "Game files do not match this build";
+    if (why.empty() && !g_ios_guest_reserved) return "Required guest address range is unavailable";
+#else
     if (why.empty() && !gamelib_present(root.c_str())) return "Game code not built yet";
+#endif
     return why;
+#endif
 }
 
 // ------------------------------------------------------------------ setup (background thread)
@@ -356,6 +371,13 @@ static void online_view(const std::string &files, bool busy, OnlineView *v) {
     static char headline[64], line[160], build[48], button[48];
     *v = {headline, line, build, false, false, false, button, false, -1.0f};
     snprintf(button, sizeof button, "Play online");
+#if TARGET_OS_IOS
+    (void)files; (void)busy;
+    snprintf(headline, sizeof headline, "Online play unavailable");
+    snprintf(line, sizeof line, "Requires a signed iOS mod build.");
+    snprintf(build, sizeof build, "Preview");
+    return;
+#endif
     snprintf(build, sizeof build, "Not prepared yet");
     snprintf(line, sizeof line, "Lumiose Online (separate service)");
     if (const char *test = getenv("LARECOMP_ONLINE_STATE_TEST")) {  // (UI check: ready, needs, setup, error, noserver (not found), off)
@@ -1049,9 +1071,22 @@ static bool g_precompile_go;  // "Compile" was chosen: start the game, which pre
 static float g_hdr_h, g_bar_y, g_bar_h, g_legal_right;  // (g_legal_right: the running left edge of the header chips)
 
 // Draws the header and the bottom bar; returns 4 when Settings was chosen, 6 for Quit, else 0
+static SDL_Rect launcher_safe_area(ImVec2 ds) {
+    SDL_Rect safe = {0, 0, (int)ds.x, (int)ds.y};
+#if TARGET_OS_IOS
+    SDL_GetWindowSafeArea(ui_window(), &safe);
+#endif
+    return safe;
+}
+
 static int home_chrome(float s, ImVec2 ds) {
+    SDL_Rect safe = launcher_safe_area(ds);
     g_hdr_h = 84 * s;
     g_bar_h = 80 * s;
+#if TARGET_OS_IOS
+    g_hdr_h = fmaxf(60, g_hdr_h) + safe.y;
+    g_bar_h = fmaxf(42, g_bar_h) + ds.y - (safe.y + safe.h);
+#endif
     g_bar_y = ds.y - g_bar_h;
     ImDrawList *dl = ImGui::GetWindowDrawList();
     const ImU32 glass = IM_COL32(4, 10, 26, 215), edge = IM_COL32(76, 100, 137, 180);
@@ -1063,17 +1098,18 @@ static int home_chrome(float s, ImVec2 ds) {
     dl->AddRectFilled(ImVec2(0, g_bar_y), ImVec2(ds.x, ds.y), glass);
     dl->AddLine(ImVec2(0, g_bar_y), ImVec2(ds.x, g_bar_y), edge, 1.0f * s);
 
-    float ls = 56 * s, x = 40 * s, y = (g_hdr_h - ls) * 0.5f;
+    float ls = 56 * s, x = safe.x + 40 * s, y = (g_hdr_h + safe.y - ls) * 0.5f;
     dl->AddImage(LOGO_TEXID, ImVec2(x, y), ImVec2(x + ls, y + ls));
     float ts = 34 * s;
     ImVec2 tp(x + ls + 16 * s, y - 2 * s);
     for (float d : {3.0f, 1.5f}) dl->AddText(g_font_title, ts, ImVec2(tp.x + d, tp.y + d), IM_COL32(0, 4, 20, 140), "MonZaMac");
     dl->AddText(g_font_title, ts, tp, IM_COL32(238, 244, 255, 255), "MonZaMac");
-    dl->AddText(g_font_small, 15 * s, ImVec2(tp.x + 2 * s, tp.y + ts + 2 * s), IM_COL32(166, 185, 207, 255), "Pok\xc3\xa9mon Legends: Z-A \xc2\xb7 Apple Silicon");
+    dl->AddText(g_font_small, 15 * s, ImVec2(tp.x + 2 * s, tp.y + ts + 2 * s), IM_COL32(166, 185, 207, 255), TARGET_OS_IOS ? "Pok\xc3\xa9mon Legends: Z-A \xc2\xb7 iOS" : "Pok\xc3\xa9mon Legends: Z-A \xc2\xb7 Apple Silicon");
 
     int act = 0;
     ImVec2 saved = ImGui::GetCursorScreenPos();
-    float bh = 40 * s, by = (g_hdr_h - bh) * 0.5f, right = ds.x - 40 * s;
+    float bh = TARGET_OS_IOS ? fmaxf(44, 40 * s) : 40 * s;
+    float by = (g_hdr_h + safe.y - bh) * 0.5f, right = safe.x + safe.w - 40 * s;
     auto button = [&](const char *label, const char *id, bool gear) {
         float w = g_font_small->CalcTextSizeA(24 * s, FLT_MAX, 0, label).x + 24 * s * 2 + 32 * s;
         ImVec2 p(right - w, by), q(p.x + w, p.y + bh);
@@ -1101,7 +1137,7 @@ static int home_chrome(float s, ImVec2 ds) {
         right = p.x - 12 * s;
         return clicked;
     };
-    if (button("Quit", "##hdr-quit", false)) act = 6;
+    if (!TARGET_OS_IOS && button("Quit", "##hdr-quit", false)) act = 6;
     if (button("Settings", "##hdr-settings", true)) act = 4;
     g_legal_right = right;
     ImGui::SetCursorScreenPos(saved);
@@ -1111,7 +1147,7 @@ static void shader_catalog_badge(float s) {
 #ifdef __APPLE__
     static bool checked;
     const char *test = getenv("LARECOMP_CATALOG_STATUS_TEST");
-    if (!checked && !test && !getenv("LARECOMP_NO_UPDATE_CHECK")) checked = menu_catalog_check();
+    if (!TARGET_OS_IOS && !checked && !test && !getenv("LARECOMP_NO_UPDATE_CHECK")) checked = menu_catalog_check();
     int state = menu_catalog_status();
     if (test) {
         if (!strcmp(test, "available")) state = CATALOG_AVAILABLE;
@@ -1172,10 +1208,10 @@ static void shader_catalog_badge(float s) {
 static void legal_notice(float s) {
     ImVec2 ds = ImGui::GetIO().DisplaySize, saved = ImGui::GetCursorScreenPos();
     ImFont *font = g_font_small;
-    float fs = 24 * s, h = 40 * s;
+    float fs = 24 * s, h = TARGET_OS_IOS ? fmaxf(44, 40 * s) : 40 * s;
     ImVec2 text = font->CalcTextSizeA(fs, FLT_MAX, 0, "Legal notice");
     float w = text.x + 24 * s * 2 + 32 * s;
-    ImVec2 p(g_legal_right - w, (g_hdr_h - h) * 0.5f), q(p.x + w, p.y + h);
+    ImVec2 p(g_legal_right - w, (g_hdr_h + launcher_safe_area(ds).y - h) * 0.5f), q(p.x + w, p.y + h);
     g_legal_right = p.x - 12 * s;  // (the chips after it go further left)
     ImGui::SetCursorScreenPos(p);
     bool clicked = ImGui::InvisibleButton("Legal notice", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
@@ -1207,7 +1243,8 @@ static void legal_notice(float s) {
     ImGui::SetWindowFontScale(0.82f);
     ImGui::TextColored(ImVec4(0.28f, 0.84f, 1, 1), "Legal notice & responsible use");
     ImGui::Dummy(ImVec2(0, 12 * s));
-    ImGui::BeginChild("##legal_text", ImVec2(0, -68 * s), false);
+    float close_h = TARGET_OS_IOS ? fmaxf(44, 42 * s) : 42 * s;
+    ImGui::BeginChild("##legal_text", ImVec2(0, -close_h - 26 * s), false);
     ImGui::PushTextWrapPos(0);
     ImGui::TextUnformatted("Independent and unofficial");
     ImGui::TextWrapped("Neither MonZaMac nor this application is affiliated with, endorsed by, sponsored by or approved by "
@@ -1237,7 +1274,7 @@ static void legal_notice(float s) {
     ImGui::EndChild();
     ImGui::Dummy(ImVec2(0, 10 * s));
     ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 160 * s) * 0.5f);
-    if (ImGui::Button("Close", ImVec2(160 * s, 42 * s)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+    if (ImGui::Button("Close", ImVec2(160 * s, close_h)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
         ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) ImGui::CloseCurrentPopup();
     ImGui::PopFont();
     ImGui::EndPopup();
@@ -1309,7 +1346,7 @@ static void precompile_badge(float s) {
     ImVec2 ds = ImGui::GetIO().DisplaySize, saved = ImGui::GetCursorScreenPos();
     ImFont *font = g_font_small;
     float fs = 24 * s, h = 40 * s, w = font->CalcTextSizeA(fs, FLT_MAX, 0, "All shaders").x + 24 * s * 2 + 32 * s;
-    ImVec2 p(g_legal_right - w, (g_hdr_h - h) * 0.5f), q(p.x + w, p.y + h);
+    ImVec2 p(g_legal_right - w, (g_hdr_h + launcher_safe_area(ds).y - h) * 0.5f), q(p.x + w, p.y + h);
     g_legal_right = p.x - 12 * s;  // (a header chip like the legal notice's; its state is the icon)
     ImGui::SetCursorScreenPos(p);
     bool clicked = ImGui::InvisibleButton("##precompile-badge", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
@@ -1699,12 +1736,26 @@ static void prelaunch_tab(float sc) {
     }
 }
 
+#if TARGET_OS_IOS
+struct LauncherLifecycle {
+    std::atomic<bool> backgrounded{false}, reset_input{false};
+};
+static bool SDLCALL launcher_lifecycle(void *data, SDL_Event *event) {
+    auto &state = *static_cast<LauncherLifecycle *>(data);
+    if (event->type == SDL_EVENT_WILL_ENTER_BACKGROUND) {
+        state.backgrounded = true;
+        state.reset_input = true;
+    } else if (event->type == SDL_EVENT_DID_ENTER_FOREGROUND) state.backgrounded = false;
+    return true;
+}
+#endif
+
 extern "C" void launcher_run(const char *root) {
     g_root = root;
     g_ownership = false;
     g_start_screen = 1;
     static bool update_checked;  // (once per launch, not again after a "Title screen" reboot)
-    if (!update_checked && !getenv("LARECOMP_NO_UPDATE_CHECK")) {
+    if (!TARGET_OS_IOS && !update_checked && !getenv("LARECOMP_NO_UPDATE_CHECK")) {
         update_checked = true;
         pthread_t t;
         if (pthread_create(&t, NULL, update_thread, NULL) == 0) pthread_detach(t);
@@ -1773,9 +1824,9 @@ extern "C" void launcher_run(const char *root) {
     load_logo(dev);
 #endif
     std::string status = check_game_files(g_root);
-    if (!status.empty() && check_copied_files(g_root).empty()) g_import_mode = 1;
+    if (!TARGET_OS_IOS && !status.empty() && check_copied_files(g_root).empty()) g_import_mode = 1;
     if (status.empty()) load_background(dev);
-    Page page = status.empty() ? MAIN : SETUP;
+    Page page = TARGET_OS_IOS || status.empty() ? MAIN : SETUP;
     g_saves_first = 0;
     bool play = false;
     // LARECOMP_LAUNCHER_SHOT=<frame>[:<page>] (test): save build/launcher.png at that frame and exit; page: settings[:<tab>] / askdelete / setup / setup-error-update / saves / saves-import=<path>
@@ -1847,7 +1898,7 @@ extern "C" void launcher_run(const char *root) {
     // is built from needs it built again): rebuild it at once, as "Update game code" does, instead of waiting for a press.
     // The files were already set up with the ownership confirmation. Once per start: if it fails the page says why and the
     // button is still there. LARECOMP_NO_AUTO_REBUILD=1 turns it off.
-    if (!status.empty() && check_copied_files(g_root).empty() && !shot_at && !getenv("LARECOMP_LAUNCHER_SETUP") &&
+    if (!TARGET_OS_IOS && !status.empty() && check_copied_files(g_root).empty() && !shot_at && !getenv("LARECOMP_LAUNCHER_SETUP") &&
         !getenv("LARECOMP_LAUNCHER_DELETE") && !getenv("LARECOMP_NO_AUTO_REBUILD")) {
         g_import_mode = 1; g_src.clear(); g_ownership = true;
         g_busy = true;
@@ -1857,6 +1908,10 @@ extern "C" void launcher_run(const char *root) {
         pthread_detach(th);
     }
     const bool test_busy = getenv("LARECOMP_LAUNCHER_SHOT") && strstr(getenv("LARECOMP_LAUNCHER_SHOT"), ":extracting");
+#if TARGET_OS_IOS
+    LauncherLifecycle lifecycle;
+    SDL_AddEventWatch(launcher_lifecycle, &lifecycle);
+#endif
     while (!play) {
         menu_apply_window_requests(win);  // (the Video tab's Fullscreen)
         if (g_files_deleted) {  // (Settings > Prelaunch deleted them)
@@ -1870,6 +1925,9 @@ extern "C" void launcher_run(const char *root) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_EVENT_QUIT) exit(0);
+#if TARGET_OS_IOS
+            if (lifecycle.backgrounded) continue;
+#endif
             if (e.type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN) g_fs_entered = SDL_GetTicks();
             if (busy) {  // the progress overlay is modal: no underlying mouse, keyboard or pad input (a pad plugged in meanwhile is still opened)
                 if (e.type == SDL_EVENT_GAMEPAD_ADDED) launcher_pad_event(e);
@@ -1886,6 +1944,14 @@ extern "C" void launcher_run(const char *root) {
             if (page == SETTINGS && bind_capture_event(&e)) continue;  // (waiting for a new binding: controls_ui.mm)
             if (!launcher_pad_event(e)) ImGui_ImplSDL3_ProcessEvent(&e);
         }
+#if TARGET_OS_IOS
+        if (lifecycle.reset_input.exchange(false)) {
+            io.ClearEventsQueue();
+            io.ClearInputKeys();
+            io.ClearInputMouse();
+        }
+        if (lifecycle.backgrounded) { SDL_Delay(50); continue; }
+#endif
         // extraction finished: re-check, load the background
         pthread_mutex_lock(&g_lock);
         busy = g_busy || test_busy;
@@ -2007,7 +2073,9 @@ extern "C" void launcher_run(const char *root) {
                 {   // the columns, centered between the header and the bar: offline, and with LUMIOSE_ONLINE Lumiose Online beside it
                     float pad = 24 * s, ch = g_bar_y - g_hdr_h - 2 * pad, top = g_hdr_h + pad;
 #ifdef LUMIOSE_ONLINE
-                    float gap = 28 * s, cw = ds.x - 2 * pad - 20 * s, lw = (cw - gap) * 0.6f, x0 = (ds.x - cw) * 0.5f;
+                    SDL_Rect safe = launcher_safe_area(ds);
+                    float gap = 28 * s, cw = safe.w - 2 * pad - 20 * s;
+                    float lw = (cw - gap) * (TARGET_OS_IOS ? 0.54f : 0.6f), x0 = safe.x + (safe.w - cw) * 0.5f;
                     int col = saves_home_draw(g_font_small, ready, !ready || busy, !g_play_focused, false, x0, top, lw, ch);
                     if (col) act = col;
                     OnlineView ov;
@@ -2115,6 +2183,38 @@ extern "C" void launcher_run(const char *root) {
                     page = MAIN, g_play_focused = false;
                 }
             } else {
+#if TARGET_OS_IOS
+                const SDL_Rect safe = launcher_safe_area(ds);
+                float width = fminf(safe.w - 36, 620), height = fminf(safe.h - 36, 240);
+                ImGui::SetCursorScreenPos(ImVec2(safe.x + (safe.w - width) * 0.5f, safe.y + (safe.h - height) * 0.5f));
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.04f, 0.07f, 0.14f, 1));
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24, 18));
+                ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12);
+                ImGui::BeginChild("##ios-setup", ImVec2(width, height),
+                                  ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
+                ImGui::PopStyleVar(2);
+                ImGui::PopStyleColor();
+                ImGui::PushFont(g_font_small);
+                ImGui::SetWindowFontScale(27 / ImGui::GetFontSize());
+                ImGui::TextColored(ImVec4(0.28f, 0.84f, 1, 1), "Game Files");
+                ImGui::Spacing();
+#ifdef MONZA_IOS_PRIVATE_GAME
+                ImGui::TextWrapped("Copy the prepared extracted folder from your Mac into MonZaMac in Files. "
+                                   "Use the same game files you used to build this app, then reopen the app.");
+#else
+                ImGui::TextWrapped("This preview shows the launcher and settings. A future build will use your own "
+                                   "Pok\xc3\xa9mon Legends: Z-A 2.0.2 files, prepared on a Mac.");
+#endif
+                ImGui::Spacing();
+                ImGui::TextWrapped("Lumiose Online also needs a compatible version of the mod built for iOS.");
+                ImGui::Spacing();
+                if (ImGui::Button("Back", ImVec2(112, 44)) ||
+                    ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+                    ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+                    page = MAIN, g_play_focused = false;
+                ImGui::PopFont();
+                ImGui::EndChild();
+#else
                 // SETUP: the game files, in a window like Settings (option rows: runtime/ui/option_rows.h) - choose the
                 // folder with the game files, set up; once set up, delete. Each row's explanation on the right.
                 float sc = ds.y / 1080.0f, w = fminf(ds.x * 0.9f, 1500 * sc), h = ds.y - 2 * 18 * sc;
@@ -2391,13 +2491,15 @@ extern "C" void launcher_run(const char *root) {
                                     IM_COL32(150, 148, 140, 255), notes[i]);
                     }
                 }
+#endif
             }
 
             // status (lower left) and version (lower right) - not under the Settings / Game Files windows
             if (page == MAIN) {
             ImGui::PushFont(g_font_small);
             // (the lines under the home panel, the width of the panel: its left and right edges)
-            float fx = 40 * s, fy = g_bar_y + 12 * s, fw = ds.x - 80 * s, fu = 22 * s;  // (the bottom bar's lines)
+            SDL_Rect safe = launcher_safe_area(ds);
+            float fx = safe.x + 40 * s, fy = g_bar_y + (TARGET_OS_IOS ? 8 : 12) * s, fw = safe.w - 80 * s, fu = 22 * s;  // (the bottom bar's lines)
             x0 = fx;
             ImGui::SetWindowFontScale(fu * 0.8f / ImGui::GetFontSize());
             ImGui::SetCursorScreenPos(ImVec2(fx, fy));
@@ -2438,7 +2540,11 @@ extern "C" void launcher_run(const char *root) {
             } else {
                 ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "!  %s", busy ? "Setting up the game files..." : status.c_str());
                 ImGui::SetCursorPosX(x0);
-                ImGui::TextDisabled("Set up the game files to play.");
+#ifdef MONZA_IOS_PRIVATE_GAME
+                ImGui::TextDisabled("See Game Files for setup.");
+#else
+                ImGui::TextDisabled(TARGET_OS_IOS ? "Gameplay is unavailable in this preview." : "Set up the game files to play.");
+#endif
             }
             if (const char *f = getenv("LARECOMP_LAUNCHER_FONT")) {  // (test) which typeface this window shows
                 const char *b = strrchr(f, '/');
@@ -2498,7 +2604,7 @@ extern "C" void launcher_run(const char *root) {
 #ifdef __APPLE__
             // (the size is final at once, the picture is not: macOS animates into fullscreen and says so when done)
             bool fs_wait = g_settings.fullscreen && (g_fs_entered ? SDL_GetTicks() - g_fs_entered < 300 : SDL_GetTicks() < 3000);
-            if ((still < 20 || fs_wait) && !shot_at)
+            if (!TARGET_OS_IOS && (still < 20 || fs_wait) && !shot_at)
                 ImGui::GetForegroundDrawList()->AddRectFilled(ImVec2(0, 0), ds, IM_COL32(10, 13, 15, 255));
 #endif
             ImGui::Render();
@@ -2530,6 +2636,9 @@ extern "C" void launcher_run(const char *root) {
 #endif
         }
     }
+#if TARGET_OS_IOS
+    SDL_RemoveEventWatch(launcher_lifecycle, &lifecycle);
+#endif
     // play: hand the window to the game
     settings_save();
 #ifdef __APPLE__

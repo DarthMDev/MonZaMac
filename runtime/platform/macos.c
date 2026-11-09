@@ -1,13 +1,18 @@
 // macOS host layer (runtime/platform.h).
 #include <errno.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <TargetConditionals.h>
+#if !TARGET_OS_IOS
 #include <crt_externs.h>
+#endif
 #include <dlfcn.h>
 #include <execinfo.h>
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
+#if !TARGET_OS_IOS
 #include <mach/mach_vm.h>
+#endif
 #include <mach/thread_policy.h>
 #include <pthread.h>
 #include <signal.h>
@@ -25,16 +30,31 @@ static mach_timebase_info_data_t tb;
 void plat_init(void) {}
 
 bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
+#if TARGET_OS_IOS
+    // mmap treats the requested address as a hint without MAP_FIXED. Never overwrite another mapping.
+    void *want = (void *)(uintptr_t)lo;
+    void *map = mmap(want, hi - lo, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (map == want) return true;
+    if (map != MAP_FAILED) munmap(map, hi - lo);
+    return false;
+#else
     // Everything readable/writable: macOS pages are 16K but the guest maps at 4K granularity.
     // Untouched pages cost nothing.
     mach_vm_address_t a = lo;
     return mach_vm_allocate(mach_task_self(), &a, hi - lo, VM_FLAGS_FIXED) == KERN_SUCCESS;
+#endif
 }
 
 // Fresh zero pages over the whole window (the old ones are released at once).
 bool plat_reset_guest(uint64_t lo, uint64_t hi) {
+#if TARGET_OS_IOS
+    // Called only for the previously reserved guest window.
+    return mmap((void *)(uintptr_t)lo, hi - lo, PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) != MAP_FAILED;
+#else
     mach_vm_address_t a = lo;
     return mach_vm_allocate(mach_task_self(), &a, hi - lo, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE) == KERN_SUCCESS;
+#endif
 }
 
 void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
@@ -80,9 +100,14 @@ bool plat_exe_path(char *buf, size_t size) {
 }
 
 void plat_exec(char *const argv[]) {
+#if TARGET_OS_IOS
+    (void)argv;
+    errno = ENOTSUP;
+#else
     if (argv) { execv(argv[0], argv); return; }
     char path[4096];
     if (plat_exe_path(path, sizeof path)) execv(path, *_NSGetArgv());
+#endif
 }
 
 const char *plat_symbol(uint64_t pc, uint64_t *offset) {
@@ -107,10 +132,12 @@ void plat_fatal_notice(void) {
     rt_crash_explain(text, sizeof text, g_log_path);
     if (!g_log_path[0]) return;
     fflush(stderr);
+#if !TARGET_OS_IOS
     CFStringRef msg = CFStringCreateWithCString(NULL, text, kCFStringEncodingUTF8);
     CFUserNotificationDisplayAlert(0, kCFUserNotificationStopAlertLevel, NULL, NULL, NULL, CFSTR("MonZaMac"), msg,
                                    CFSTR("OK"), NULL, NULL, NULL);
     if (msg) CFRelease(msg);
+#endif
 }
 
 void plat_print_backtrace(void) {
@@ -153,6 +180,11 @@ void plat_crash_handler_install(void) {
 extern char **environ;
 
 PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_log) {
+#if TARGET_OS_IOS
+    (void)argv; (void)log_path; (void)append_log;
+    errno = ENOTSUP;
+    return 0;
+#else
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
     posix_spawn_file_actions_addopen(&fa, 1, log_path ? log_path : "/dev/null",
@@ -167,14 +199,17 @@ PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_
     posix_spawnattr_destroy(&at);
     posix_spawn_file_actions_destroy(&fa);
     return rc ? 0 : (PlatProc)pid;
+#endif
 }
 
 void plat_proc_kill(PlatProc p) {
+    if (!p) return;
     kill(-(pid_t)p, SIGKILL);
     waitpid((pid_t)p, NULL, 0);
 }
 
 int plat_proc_wait(PlatProc p, bool block) {
+    if (!p) return 255;
     int st = 0;
     pid_t r = waitpid((pid_t)p, &st, block ? 0 : WNOHANG);
     if (r == 0) return -1;

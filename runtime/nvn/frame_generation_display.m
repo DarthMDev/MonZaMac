@@ -1,3 +1,4 @@
+#include <TargetConditionals.h>
 #import "frame_generation_display.h"
 #include "frame_generation_present.h"
 #import <Foundation/Foundation.h>
@@ -98,6 +99,7 @@ static bool present_image(FgDisplayPacket *p, id<MTLCommandQueue> queue,
     id<MTLCommandBuffer> cb=copy_image(queue,image,drawable.texture);
     if(!cb)return false;
     uint64_t epoch=p->epoch;
+#if !TARGET_OS_SIMULATOR
     [drawable addPresentedHandler:^(id<MTLDrawable> shown) {
         double now=shown.presentedTime;
         pthread_mutex_lock(&lock);
@@ -112,6 +114,7 @@ static bool present_image(FgDisplayPacket *p, id<MTLCommandQueue> queue,
         }
         pthread_mutex_unlock(&lock);
     }];
+#endif
     // Serialize the final epoch check with reset. Already committed drawables
     // cannot be recalled, but reset prevents any later stale submission.
     pthread_mutex_lock(&submit_lock);

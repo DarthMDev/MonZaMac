@@ -7,7 +7,7 @@
 #include <unistd.h>
 #import <Metal/Metal.h>
 #include <mach/mach_time.h>
-#include <mach/mach_vm.h>
+#include "../platform/apple_memory.h"
 #include <stdlib.h>
 #include <string.h>
 #include <float.h>
@@ -2523,7 +2523,12 @@ static id<MTLTexture> hdr_const_tex(void) {
         d.pixelFormat = MTLPixelFormatRGBA16Float;
         d.width = d.height = 1;
         d.usage = MTLTextureUsageShaderRead;
-        d.storageMode = MTLStorageModeManaged;
+        d.storageMode =
+#if TARGET_OS_IOS
+            MTLStorageModeShared;
+#else
+            MTLStorageModeManaged;
+#endif
         tex = [dev newTextureWithDescriptor:d];
         uint16_t one[4] = {0x3C00, 0x3C00, 0x3C00, 0x3C00};  // half 1.0
         [tex replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:one bytesPerRow:8];
@@ -2586,7 +2591,9 @@ static id<MTLTexture> stencil_texture(NvnTexture *t) {
     id<MTLTexture> base = renderer_texture(t, nil, false);
     MTLPixelFormat pf = base.pixelFormat;
     if (pf == MTLPixelFormatDepth32Float_Stencil8) pf = MTLPixelFormatX32_Stencil8;
+#if !TARGET_OS_IOS
     else if (pf == MTLPixelFormatDepth24Unorm_Stencil8) pf = MTLPixelFormatX24_Stencil8;
+#endif
     else return base;
     id<MTLTexture> v = view_cached(base, 0x5700000000000000ull | (uint64_t)pf, ^{
         return [base newTextureViewWithPixelFormat:pf textureType:MTLTextureType2D
@@ -4870,7 +4877,11 @@ static void copy_texture_gpu(const TexRefRec *src, const TexRefRec *dst, uint64_
         static id<MTLSamplerState> dnear;
         if (!dnear) dnear = [dev newSamplerStateWithDescriptor:[MTLSamplerDescriptor new]];
         id<MTLTexture> sdepth = s;
-        if (s.pixelFormat == MTLPixelFormatDepth32Float_Stencil8 || s.pixelFormat == MTLPixelFormatDepth24Unorm_Stencil8)
+        if (s.pixelFormat == MTLPixelFormatDepth32Float_Stencil8
+#if !TARGET_OS_IOS
+            || s.pixelFormat == MTLPixelFormatDepth24Unorm_Stencil8
+#endif
+        )
             sdepth = [s newTextureViewWithPixelFormat:s.pixelFormat];
         float r[4] = {(float)sx0 / s.width, (float)sy0 / s.height, (float)sw / s.width, (float)sh / s.height};
         [e setRenderPipelineState:pipe];

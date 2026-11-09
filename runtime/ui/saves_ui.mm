@@ -7,7 +7,12 @@
 #include <string.h>
 #include <time.h>
 #include <atomic>
+#include <TargetConditionals.h>
+#if TARGET_OS_IOS
+#import <Foundation/Foundation.h>
+#else
 #import <AppKit/AppKit.h>
+#endif
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include "imgui.h"
 #include "imgui_internal.h"  // ImTextCharFromUtf8
@@ -282,6 +287,9 @@ static void panels_poll(void) {  // (drawing thread, each frame)
 
 // Import: a folder or a .zip, staged when chosen (the import dialog opens on the next frame)
 static void import_pick(void) {
+#if TARGET_OS_IOS
+    post_msg("Save import is unavailable in the iOS preview.", true);
+#else
     if (g_panel_up.exchange(true)) return;
     dispatch_async(dispatch_get_main_queue(), ^{
         NSOpenPanel *op = [NSOpenPanel openPanel];
@@ -301,6 +309,7 @@ static void import_pick(void) {
             g_import_ready = true;
         }];
     });
+#endif
 }
 
 // (screenshots: LARECOMP_LAUNCHER_SHOT=<frame>:saves-import=<path> opens the import dialog on that save)
@@ -313,6 +322,10 @@ extern "C" void saves_screen_test_import(const char *src) {
 
 // Export: the Mac's save panel, then the slot as a .zip (on the main thread, when chosen)
 static void export_pick(const SaveSlot &s) {
+#if TARGET_OS_IOS
+    (void)s;
+    post_msg("Save export is unavailable in the iOS preview.", true);
+#else
     if (g_panel_up.exchange(true)) return;
     // the slot's own name (what the player calls it), its play time and today's date: two exports of one save at
     // different points don't take the same file name
@@ -340,6 +353,7 @@ static void export_pick(const SaveSlot &s) {
             post_msg(m, !ok);
         }];
     });
+#endif
 }
 
 // A copy's name, offered in the field: the save's name and its play time ("Trainer - 12h34"), made free with " 2"...
@@ -821,7 +835,8 @@ int saves_home_draw(ImFont *small_, bool ready, bool show_setup, bool focus_firs
         }
     } else {
         dl->AddText(small_, u * 1.0f, ImVec2(x + u * 0.7f, ty + u * 0.45f), pal::text, "No saves yet");
-        dl->AddText(small_, u * 0.8f, ImVec2(x + u * 0.7f, ty + u * 1.55f), pal::sub, "Choose NEW GAME to begin.");
+        dl->AddText(small_, u * 0.8f, ImVec2(x + u * 0.7f, ty + u * 1.55f), pal::sub,
+                    TARGET_OS_IOS && !ready ? "Prepare the game files on your Mac." : "Choose NEW GAME to begin.");
     }
 
     // the buttons
@@ -829,12 +844,25 @@ int saves_home_draw(ImFont *small_, bool ready, bool show_setup, bool focus_firs
     struct Item { const char *label; bool on; int act; } items[4] = {
         {"CONTINUE", ready && any, 1}, {"NEW GAME", ready, 2}, {"SAVES", ready, 3}, {"SET UP GAME FILES", true, 5}};
     int act = 0;
+#if TARGET_OS_IOS
+    // Use two rows so the phone can fit four full-height tap targets alongside the online panel.
+    float gap = u * 0.65f, bw = (w - gap) * 0.5f;
+    bh = fmaxf(bh, 44);
+    by = ry + rh - ((n + 1) / 2) * bh - gap - u;
+    for (int i = 0; i < n; i++) {
+        const char *label = items[i].act == 5 ? "GAME FILES" : items[i].label;
+        ImVec2 p(x + (i % 2) * (bw + gap), by + (i / 2) * (bh + gap));
+        if (wide_button(dl, label, p, bw, bh, small_, fmaxf(19, u * 1.12f), items[i].on,
+                        focus_first && i == n - 1 && items[i].on)) act = items[i].act;
+    }
+#else
     bool first_focus = focus_first;
     for (int i = 0; i < n; i++) {
         bool f = first_focus && items[i].on;
         if (f) first_focus = false;
         if (wide_button(dl, items[i].label, ImVec2(x, by + step * i), w, bh, small_, u * 0.95f, items[i].on, f)) act = items[i].act;
     }
+#endif
     return act;
 }
 

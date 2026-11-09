@@ -1,5 +1,11 @@
 // MonZaMac entry: load modules, set up the kernel, run nn::init::Start on the main thread.
 #include <SDL3/SDL.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+#if TARGET_OS_IOS
+#include <SDL3/SDL_main.h>
+#endif
 #include <stdbool.h>
 #include <stdio.h>
 #include <sys/stat.h>
@@ -53,6 +59,7 @@ static void rtld_fini(Cpu *c) { (void)c; LOG("nnMain returned\n"); }
 
 // Claim the guest address range before anything else can map there. The host allocator places
 // regions at random addresses in the same window; on a collision, re-exec for a fresh layout.
+#if !TARGET_OS_IOS
 __attribute__((constructor(101))) static void reserve_guest_space(void) {
     if (plat_reserve_guest(GUEST_LO, GUEST_HI)) return;
     const char *tries = getenv("LARECOMP_REEXEC");
@@ -68,6 +75,7 @@ __attribute__((constructor(101))) static void reserve_guest_space(void) {
     perror("re-exec");
     exit(1);
 }
+#endif
 
 // ------------------------------------------------------------------ boot / in-place reboot
 // Switching seeds (or vanilla) and going back to the start screen reboot the game inside this process: the window,
@@ -183,6 +191,10 @@ static void boot(const char *root) {
 
 uint8_t g_game_build[8];  // the exefs/main build ID read at start (all zero when unreadable)
 
+#if TARGET_OS_IOS
+bool g_ios_guest_reserved;
+#endif
+
 extern int g_saves_first;  // runtime/ui/launcher.mm: the start screen opens on the save picker
 int main(int argc, char **argv) {
     plat_init();
@@ -191,6 +203,19 @@ int main(int argc, char **argv) {
 #else
     setvbuf(stderr, NULL, _IOLBF, 0);
 #endif
+#if TARGET_OS_IOS
+    (void)argc; (void)argv;
+    static char ios_root[1024];
+    const char *home = getenv("HOME");
+    if (!home || snprintf(ios_root, sizeof ios_root, "%s/Documents/extracted", home) >= sizeof ios_root)
+        return 1;
+    const char *root = ios_root;
+    bool skip_launcher = false, play_flag = false, explicit_skip = false;
+#ifdef MONZA_IOS_PRIVATE_GAME
+    g_ios_guest_reserved = plat_reserve_guest(GUEST_LO, GUEST_HI);
+#endif
+    rt_paths_init();
+#else
     const char *root = "extracted";  // (in the data root)
     bool skip_launcher = getenv("LARECOMP_NO_LAUNCHER") || getenv("LARECOMP_INPUT");  // tests boot straight in
     static char arg_root[1024];
@@ -202,6 +227,7 @@ int main(int argc, char **argv) {
     }
     const bool explicit_skip = skip_launcher;  // (--play, tests: no save picker either)
     rt_paths_init();  // the data root becomes the working directory (runtime/paths.h)
+#endif
 #ifdef __APPLE__
     {   // Started as the app (double click: stderr is /dev/null): keep a log the crash alert can point to
         struct stat st;

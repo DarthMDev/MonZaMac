@@ -1,6 +1,7 @@
 #import "temporal_upscale.h"
 #import "../devlog.h"
 #import <Foundation/Foundation.h>
+#if __has_include(<MetalFX/MetalFX.h>)
 #import <MetalFX/MetalFX.h>
 #import <simd/simd.h>
 #include <math.h>
@@ -200,3 +201,20 @@ id<MTLTexture> ts_encode(id<MTLCommandBuffer> cb,id<MTLTexture> scene,id<MTLText
     return f->composite;
     }
 }
+
+#else
+bool temporal_supported(void) { return false; }
+bool ts_enabled(void) { return false; }
+bool ts_geometry_extent(unsigned width, unsigned height, uint64_t frame) { return false; }
+void ts_output_extent(unsigned width, unsigned height) {}
+bool ts_raster_active(void) { return false; }
+void ts_jitter(uint64_t frame, float out[2]) { out[0] = out[1] = 0; }
+void ts_camera_jitter(float matrices[96], const float jitter[2], float width, float height, bool flip_y) {}
+id<MTLTexture> ts_encode(id<MTLCommandBuffer> cb, id<MTLTexture> scene, id<MTLTexture> ui,
+    id<MTLTexture> depth, id<MTLTexture> geometry, const FgCamera *camera, const FgRect *rect,
+    unsigned width, unsigned height, uint64_t frame, TemporalOutput *output) {
+    if (output) *output = (TemporalOutput){0};
+    return nil;
+}
+void ts_reset(void) {}
+#endif

@@ -12,10 +12,56 @@
 
 #include "paths.h"
 #include "rt.h"
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 
 static const GameLibTables *g_tables;
 static char g_error[256];
 
+#if TARGET_OS_IOS
+#ifdef MONZA_IOS_PRIVATE_GAME
+#include "ios_game_ids.h"
+extern const GameLibTables *lasgame_tables(void);
+
+static bool matches_nso(const char *root, const char *name, const uint8_t expected[32]) {
+    char path[1100];
+    if (!root || snprintf(path, sizeof path, "%s/exefs/%s", root, name) >= sizeof path) return false;
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    uint8_t h[0x60];
+    bool ok = fread(h, 1, sizeof h, f) == sizeof h && !memcmp(h, "NSO0", 4) &&
+              !memcmp(h + 0x40, expected, 32);
+    fclose(f);
+    return ok;
+}
+#endif
+
+bool gamelib_present(const char *game_dir) {
+#ifdef MONZA_IOS_PRIVATE_GAME
+    return matches_nso(game_dir, "main", ios_main_id) && matches_nso(game_dir, "sdk", ios_sdk_id);
+#else
+    (void)game_dir;
+    return false;
+#endif
+}
+
+bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
+#ifdef MONZA_IOS_PRIVATE_GAME
+    if (gamelib_present(game_dir)) {
+        const GameLibTables *t = lasgame_tables();
+        if (t && t->abi == GAMELIB_ABI && t->id && !strcmp(t->id, GAMELIB_ID)) {
+            g_tables = t;
+            return true;
+        }
+    }
+#else
+    (void)game_dir;
+#endif
+    if (why) snprintf(why, why_size, "Game files do not match the signed iOS build");
+    return false;
+}
+#else
 // The library's id file (<library>.id, written next to it by the build): its GAMELIB_ID, read without loading it.
 static bool id_matches(const char *lib) {
     char path[1100], id[128] = {0};
@@ -101,5 +147,7 @@ bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
     if (!g_tables && why) snprintf(why, why_size, "%s", g_error);
     return g_tables != NULL;
 }
+
+#endif
 
 const GameLibTables *gamelib_tables(void) { return g_tables; }

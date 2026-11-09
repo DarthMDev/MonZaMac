@@ -4,9 +4,17 @@
 #include "ui/menu.h"
 // Metal renderer for the NVN layer: window, textures, command execution, presentation.
 #include <sys/stat.h>
+#include <TargetConditionals.h>
+#if !TARGET_OS_IOS
 #import <AppKit/AppKit.h>
+#endif
 #import <Metal/Metal.h>
+#if __has_include(<MetalFX/MetalFX.h>)
 #import <MetalFX/MetalFX.h>
+#define HAVE_METALFX 1
+#else
+#define HAVE_METALFX 0
+#endif
 #include "output_scale.h"
 #include "frame_generation.h"
 #include "temporal_upscale.h"
@@ -678,12 +686,14 @@ static const char *present_src =
 void backend_init(void) {
     while (!atomic_load(&ui_ready)) usleep(1000);
     queue = [dev newCommandQueue];
+#if !TARGET_OS_IOS
     // App Nap: macOS coalesces and stretches the timers of a process it thinks idle (the window behind another app).
     // The guest's timed waits (a 4 ms timer thread, the 20-30 ms job waits) then never expire and the whole game freezes
     // - lldb on a hung run showed five timed waits parked for minutes. A latency-critical activity switches it off.
     static id<NSObject> g_activity;
     g_activity = [[NSProcessInfo processInfo] beginActivityWithOptions:(NSActivityUserInitiatedAllowingIdleSystemSleep | NSActivityLatencyCritical)
                                                                  reason:@"emulated game running"];
+#endif
     NSError *err = nil;
     id<MTLLibrary> lib = [dev newLibraryWithSource:@(present_src) options:nil error:&err];
     if (!lib) FATAL("present shader: %s\n", err.localizedDescription.UTF8String);
@@ -800,7 +810,9 @@ static void save_png(id<MTLTexture> tex, const char *path) { renderer_save_textu
 // Real and interpolated images may have different resolutions. Keep their filters warm independently.
 @interface PresentEffects : NSObject {
 @public
+#if HAVE_METALFX
     id<MTLFXSpatialScaler> fx;
+#endif
     id<MTLTexture> fx_out, edges, weights, smaa_out;
     id<MTLRenderPipelineState> pe, pw, pb;
     NSUInteger fx_iw, fx_ih, fx_ow, fx_oh, smaa_w, smaa_h;
@@ -816,6 +828,7 @@ static PresentEffects *present_effects(bool generated) {
     return states[generated];
 }
 static id<MTLTexture> metalfx_upscale(id<MTLCommandBuffer> cb, id<MTLTexture> in, double ow_d, double oh_d, PresentEffects *effects) {
+#if HAVE_METALFX
     (void)cb;
     if (g_settings.upscaler != UPSCALE_METALFX && g_settings.upscaler != UPSCALE_METALFX_TEMPORAL) return nil;
     static int supported = -1;
@@ -845,6 +858,9 @@ static id<MTLTexture> metalfx_upscale(id<MTLCommandBuffer> cb, id<MTLTexture> in
             (unsigned long)oh, effects->fx ? "ok" : "FAILED");
     }
     return effects->fx && effects->fx_out ? effects->fx_out : nil;
+#else
+    return nil;
+#endif
 }
 // SMAA 1x (Video tab "Anti-aliasing"; third_party/smaa, MIT; as runtime/nvn/vulkan/shaders.c / exec.c): luma edges ->
 // blending weights -> neighbourhood blending, at the game image's size, before the present / MetalFX. The reference
@@ -988,12 +1004,16 @@ static id<MTLTexture> smaa_encode(id<MTLCommandBuffer> cb, id<MTLTexture> in, Pr
 }
 
 static id<MTLTexture> metalfx_encode(id<MTLCommandBuffer> cb, id<MTLTexture> in, PresentEffects *effects) {
+#if HAVE_METALFX
     effects->fx.colorTexture = in;
     effects->fx.inputContentWidth = in.width;
     effects->fx.inputContentHeight = in.height;
     effects->fx.outputTexture = effects->fx_out;
     [effects->fx encodeToCommandBuffer:cb];
     return effects->fx_out;
+#else
+    return nil;
+#endif
 }
 
 
@@ -1177,6 +1197,7 @@ static void fg_draw_present(id<MTLCommandBuffer> cb,id<MTLTexture> target,id<MTL
 
 double g_stat_cpu_ms, g_stat_gpu_ms;  // smoothed per presented frame (Developer: F3 in ui/menu.mm)
 void backend_present(NvnTexture *t) {
+#if !TARGET_OS_IOS
     static bool was_uncapped, saved_display_sync;
     bool uncapped = settings_uncapped_fps();
     if (uncapped != was_uncapped) {
@@ -1185,6 +1206,7 @@ void backend_present(NvnTexture *t) {
         was_uncapped = uncapped;
         LOG("[metal] display sync %s (Developer benchmark)\n", layer.displaySyncEnabled ? "on" : "off");
     }
+#endif
     g_last_presented = t;
     {   // (diagnostics) which guest texture the window shows: the end of the post chain
         extern bool g_debug_frame;
@@ -1519,6 +1541,7 @@ void backend_shader_prepare_inputs(unsigned done, unsigned total) {
 
 // SDL lays out its native content/Metal views by frame. Auto Layout constraints
 // attached here can shrink that content view, leaving the game pinned left.
+#if !TARGET_OS_IOS
 @interface PreparationPage : NSView {
 @public
     NSTextField *brand, *title, *detail, *count;
@@ -1621,6 +1644,10 @@ static bool ui_preparation_update(void) {
     return true;
 }
 
+#else
+static bool ui_preparation_update(void) { return false; }
+#endif
+
 // ================================================================== UI thread
 // The window + Metal layer, created once: by the launcher (runtime/ui/launcher.mm, start screen before the game
 // boots) or by ui_run; the game reuses the launcher's window.
@@ -1629,15 +1656,23 @@ void ui_window_init(void) {
     // (no SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS here: on macOS reading controllers in the background opens them
     // as HID devices, for which the system asks for Input Monitoring - "receive keystrokes from any application")
     settings_load();
+#if TARGET_OS_IOS
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "1");
+#endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) FATAL("SDL_Init: %s\n", SDL_GetError());
     int win_w = 1280, win_h = 720;
     if (getenv("LARECOMP_WINDOW")) sscanf(getenv("LARECOMP_WINDOW"), "%dx%d", &win_w, &win_h);
     // LARECOMP_HIDDEN=1: never shown (automated test runs render off screen without taking the user's focus)
     SDL_WindowFlags wflags = SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (getenv("LARECOMP_HIDDEN")) wflags |= SDL_WINDOW_HIDDEN;
+#if TARGET_OS_IOS
+    wflags |= SDL_WINDOW_FULLSCREEN;
+#endif
     window = SDL_CreateWindow("MonZaMac", win_w, win_h, wflags);
     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
     rt_window_icon(window);
+#if !TARGET_OS_IOS
     // the Fullscreen setting applies from the start screen on (not only once the game runs); test windows stay windows
     if (g_settings.fullscreen && !getenv("LARECOMP_WINDOW") && !getenv("LARECOMP_HIDDEN")) SDL_SetWindowFullscreen(window, true);
     const char *topmost = getenv("LARECOMP_WINDOW_TOPMOST");  // test runs: keep the window visible (occluded windows get no drawables)
@@ -1645,9 +1680,11 @@ void ui_window_init(void) {
         SDL_SetWindowAlwaysOnTop(window, true);
         SDL_RaiseWindow(window);
     }
+#endif
     SDL_MetalView view = SDL_Metal_CreateView(window);
     layer = (__bridge CAMetalLayer *)SDL_Metal_GetLayer(view);
     dev = MTLCreateSystemDefaultDevice();
+    if (!layer || !dev) FATAL("Could not initialize Metal\n");
     layer.device = dev;
     layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
     layer.maximumDrawableCount = 3;
@@ -1659,6 +1696,7 @@ void *ui_metal_layer(void) { return (__bridge void *)layer; }
 void *ui_metal_device(void) { return (__bridge void *)dev; }
 
 int ui_run(void) {
+#if !TARGET_OS_IOS
     // The emulated vsync/timer threads need precise sleeps; App Nap timer coalescing
     // otherwise stretches 16ms sleeps to ~100ms whenever the window isn't frontmost.
     static id activity;
@@ -1666,6 +1704,7 @@ int ui_run(void) {
         activity = [[NSProcessInfo processInfo]
             beginActivityWithOptions:NSActivityUserInitiated | NSActivityLatencyCritical
                               reason:@"Game emulation"];
+#endif
     ui_window_init();
     atomic_store(&ui_ready, true);
     for (;;) {
@@ -1694,6 +1733,7 @@ int ui_run(void) {
             SDL_SetWindowSize(window,fg_old_w,fg_old_h);fg_restore_done=true;
         }
 
+#if !TARGET_OS_IOS
         NSWindow *native=(__bridge NSWindow *)SDL_GetPointerProperty(SDL_GetWindowProperties(window),SDL_PROP_WINDOW_COCOA_WINDOW_POINTER,NULL);
         int hz=0;
         if(@available(macOS 12.0,*))hz=(int)native.screen.maximumFramesPerSecond;
@@ -1701,6 +1741,7 @@ int ui_run(void) {
         atomic_store_explicit(&fg_screen_hz,hz,memory_order_relaxed);
         atomic_store_explicit(&fg_window_visible,(native.occlusionState & NSWindowOcclusionStateVisible)!=0,memory_order_relaxed);
 
+#endif
         int w, h;
         SDL_GetWindowSizeInPixels(window, &w, &h);
         // only on a change, and never 0x0 (a minimised window)

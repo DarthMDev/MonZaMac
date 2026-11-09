@@ -1,7 +1,9 @@
 // Optional ordinary-Metal MetalFX interpolation. No guest simulation work happens here.
 #import "frame_generation.h"
 #import <Foundation/Foundation.h>
+#if __has_include(<MetalFX/MetalFX.h>)
 #import <MetalFX/MetalFX.h>
+#endif
 #import <simd/simd.h>
 #include <math.h>
 

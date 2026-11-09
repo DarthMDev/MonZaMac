@@ -143,6 +143,8 @@ def main():
     ap.add_argument('--game', type=Path, help='The game folder (exefs/...) with its game library; default <source>/extracted')
     ap.add_argument('--include', type=Path, help='The headers and C sources the module is built with (the app: '
                                                   'gamelib-src); default the checkout runtime/ and tools/')
+    ap.add_argument('--export-aot', action='store_true',
+                    help='Export private portable C after offline capture, for a signed cross-build')
     args = ap.parse_args()
     cc = shlex.split(args.cc)
     if not 1 <= args.jobs <= 64 or not 0 < args.timeout <= 600:
@@ -210,13 +212,13 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     if args.cache:  # (zig's cache, with the versions: not in the home folder)
         os.environ['ZIG_GLOBAL_CACHE_DIR'] = os.environ['ZIG_LOCAL_CACHE_DIR'] = str(out / '.zig-cache')
-    final = out / (version + '-' + key[:16])
+    final = out / (version + '-' + key[:16] + ('-aot' if args.export_aot else ''))
     with (out / '.prepare.lock').open('a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError('Another preparation is already running in this output folder') from None
-        if valid_result(final, key):
+        if not args.export_aot and valid_result(final, key):
             print('Already prepared:', final)
             report(1.0, 'Already prepared', 'ready', dir=str(final))
             print_launch(final, runtime, game)
@@ -335,6 +337,24 @@ def main():
                      '--out', str(patched)])
                 m = json.loads((patched / 'manifest.json').read_text())
                 pairs = [(Path(a), Path(b)) for a, b in m['compile']]
+                if args.export_aot:
+                    bundle = work / 'aot'; bundle.mkdir()
+                    for name in ('main', 'sdk'):
+                        dst = bundle / name; dst.mkdir()
+                        for src in (generated / name).glob('*.c'):
+                            shutil.copy2(src, dst / src.name)
+                    for src, _ in pairs:
+                        shutil.copy2(src, bundle / src.parent.name / src.name)
+                    shutil.copytree(gen_dir, bundle / 'lumiose')
+                    shutil.copy2(work / 'subsdk9', bundle / 'subsdk9')
+                    write_json(bundle / 'aot.json', {
+                        'identity': key, 'module_build': build_id, 'version': version,
+                        'game': identity['game'], 'generation': generation,
+                    })
+                    log.close()
+                    bundle.rename(final)
+                    report(1.0, 'Exported private sources', 'ready', dir=str(final))
+                    return
                 done = [0]; count_lock = threading.Lock()
                 report(0.32, f'Compiling {len(pairs)} changed game files' if pairs else 'Nothing to compile')
                 def compile_game(item):
