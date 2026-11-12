@@ -100,7 +100,7 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 static const uint8_t BUILD_ID[8] = {0xb1, 0xf1, 0x2f, 0xd9, 0x19, 0xea, 0xe8, 0x6a};  // Pokémon Legends: Z-A v2.0.2 main
 // The release tag this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read
 // it): v<major>.<minor>.<patch>, 0.x until 1.0.
-#define LARECOMP_VERSION "v0.2.0"
+#define LARECOMP_VERSION "v0.2.3"
 
 #include "menu.h"
 
@@ -1396,7 +1396,7 @@ static void precompile_badge(float s) {
                        "warm. You can stop any time; what was compiled is kept.");
     ImGui::TextWrapped("Space: about 400 MB in Metal's shader cache and 120 MB of temporary files, deleted at the end.");
     ImGui::Dummy(ImVec2(0, 10 * s));
-    ImGui::TextWrapped("Nothing is uploaded. It starts the game, which does this first. Redo it when MonZaMac, macOS, your GPU "
+    ImGui::TextWrapped("Nothing is uploaded. It starts the game, which does this, then comes back here. Redo it when MonZaMac, macOS, your GPU "
                        "or the game files change: the badge turns yellow then.");
     ImGui::PopTextWrapPos();
     ImGui::EndChild();
@@ -2117,7 +2117,7 @@ extern "C" void launcher_run(const char *root) {
                 legal_notice(s);
                 shader_catalog_badge(s);
                 if (ready) precompile_badge(s);
-                if (g_precompile_go) g_precompile_go = false, play = true;
+                if (g_precompile_go) g_precompile_go = false, saves_use_latest(), play = true;  // (a save as CONTINUE, though the game goes back here once the shaders are done)
             } else if (page == SAVES) {
                 ImGui::PushFont(g_font_menu);
                 int pick = saves_screen_draw(ds.y / 1080.0f, g_font_menu, g_font_small);
@@ -2130,7 +2130,7 @@ extern "C" void launcher_run(const char *root) {
                 legal_notice(s);
                 shader_catalog_badge(s);
                 if (status.empty()) precompile_badge(s);
-                if (g_precompile_go) g_precompile_go = false, play = true;
+                if (g_precompile_go) g_precompile_go = false, saves_use_latest(), play = true;  // (a save as CONTINUE, though the game goes back here once the shaders are done)
                 float sc = ds.y / 1080.0f, w = ds.x, h = ds.y - g_hdr_h;
                 ImVec2 wp = ImGui::GetWindowPos();
                 ImGui::SetCursorScreenPos(ImVec2(wp.x, wp.y + g_hdr_h));

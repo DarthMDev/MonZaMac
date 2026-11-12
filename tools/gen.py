@@ -180,7 +180,8 @@ class Module:
 
     def _set_index(self, mu, regs, i):
         for r in regs:
-            mu.reg_write(A.UC_ARM64_REG_X0 + r if r < 29 else A.UC_ARM64_REG_X29, i)
+            mu.reg_write(A.UC_ARM64_REG_X0 + r if r < 29 else
+                         (A.UC_ARM64_REG_X29 if r == 29 else A.UC_ARM64_REG_X30), i)
 
     def _emulate_table(self, br_pc, entry, end, start, idx, count, set_at):
         """Run start..br for each index value (set at address set_at), collect targets."""
@@ -457,7 +458,7 @@ class Module:
             if a in PATCHES:  # hand-written replacement for one instruction (tools/patches.py)
                 flush()
                 out.append('    ' + PATCHES[a](self, a))
-                last = 'op'
+                last = 'b' if self.name == 'lumiose' and ins.kind == 'b' else 'op'
                 continue
             k = ins.kind
             if k == 'asm':
@@ -521,7 +522,7 @@ class Module:
         return out
 
 
-from patches import PATCHES, ZA_BUILDS, za_patches
+from patches import PATCHES, ZA_BUILDS, lumiose_patches, za_patches
 
 def write_if_changed(path, text):
     """Leaves unchanged chunks untouched so make only recompiles what a patch affected."""
@@ -557,7 +558,9 @@ def main():
     main_nso = os.path.join(os.path.dirname(args.nso), 'main')
     build = Nso(main_nso).build_id[:16]
     PATCHES.clear()
-    if build in ZA_BUILDS and args.name == 'main':
+    if args.name == 'lumiose':
+        PATCHES.update(lumiose_patches(m))
+    elif build in ZA_BUILDS and args.name == 'main':
         PATCHES.update(za_patches(build))
         print(f'{args.name}: Pokémon Legends Z-A (build {build}): {len(PATCHES)} game patch(es)')
     else:

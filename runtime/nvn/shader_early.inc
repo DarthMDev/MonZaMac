@@ -98,9 +98,9 @@ void renderer_shader_registered(const NvnShaderStage *s) {
     if (!early_enabled()) return;
     early_init();
     if (!early_targets || !s || s->stage > 1 || s->const_offset < 16 || s->const_offset > (16u << 20) ||
-        s->const_size > (16u << 20) - s->const_offset || s->code_addr < GUEST_LO || s->code_addr >= GUEST_HI) return;
+        s->const_size > (16u << 20) - s->const_offset || !guest_contains(s->code_addr, 1)) return;
     size_t size = (size_t)s->const_offset + s->const_size;
-    if (size > GUEST_HI - s->code_addr) return;
+    if (!guest_contains(s->code_addr, size)) return;
     @autoreleasepool {
         NSMutableData *bytes = [NSMutableData dataWithLength:size];
         if (!apple_read_memory(s->code_addr, size, bytes.mutableBytes)) return;

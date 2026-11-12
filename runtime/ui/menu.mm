@@ -929,7 +929,8 @@ static void tab_developer(float scale) {
     opt_section("Experimental");
     opt_toggle("Uncapped FPS (benchmark)", &g_settings.dev_uncapped_fps, false,
                "For throughput measurements only. Removes frame pacing and display sync. Gameplay, animations and "
-               "timers may run too fast. Turn off for normal play; this overrides the selected frame rate and disables frame generation.");
+               "timers may run too fast. Turn off for normal play; this overrides the selected frame rate and disables frame generation. "
+               "Never active online.");
     opt_toggle("CPU/GPU overlap", &g_settings.gpu_overlap, true,
                "The game waits for each frame's GPU work right after sending it, so the CPU and the GPU take turns. On: the "
                "wait is one frame late, so the CPU prepares the next frame while the GPU draws this one: a higher frame "
@@ -972,6 +973,21 @@ static void tab_about(void) {
         static const char *const btn[] = {"Right button", "Left button", "Middle button", "Any button"};
         choice("Button to hold", &g_settings.mouse_camera_button, btn, 4);
     }
+#ifdef LUMIOSE_ONLINE
+    // Only where the cursor shows in game: online play (the Lumiose module loaded, runtime/loader.c), or the start screen
+    // (no game yet: set it before playing online). Not in an offline game, where the cursor stays hidden.
+    extern int g_nmodules;
+    if (g_nmodules == 0 || g_nmodules > 2) {
+        static const char *const hide[] = {"Never", "After 5 seconds", "After 10 seconds", "After 30 seconds", "After 60 seconds"};
+        static const int secs[] = {0, 5, 10, 30, 60};
+        int i = 0;
+        while (i < 4 && secs[i] != g_settings.cursor_hide_s) i++;
+        if (secs[i] != g_settings.cursor_hide_s) i = 1;  // (a value from an edited ini: shown as the default)
+        if (choice("Hide the idle cursor", &i, hide, 5)) g_settings.cursor_hide_s = secs[i];
+        hint("Online, where the cursor shows in game (the Lumiose interface is clicked with it): it hides when the mouse "
+             "has not moved or clicked for this long, and comes back as soon as it does (a two-finger drag does not count).");
+    }
+#endif
     toggle("Two-finger drag on the trackpad", &g_settings.trackpad_camera);
     hint("The trackpad's two-finger scroll turns the camera, as the mouse does.");
     ImGui::Checkbox("Invert horizontal", &g_settings.invert_mouse_x);
