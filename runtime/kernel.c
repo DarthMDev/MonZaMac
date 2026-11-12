@@ -183,7 +183,13 @@ static void region_remove(uint64_t addr) {
 static uint64_t phys_mapped;
 static int phys_limit = -1;  // LARECOMP_PHYS_LIMIT=1: count physical memory as used and refuse mappings past APP_MEMORY
 static uint64_t used_memory(void) {
-    if (phys_limit < 0) phys_limit = getenv("LARECOMP_PHYS_LIMIT") != NULL;
+    if (phys_limit < 0) {
+#if TARGET_OS_IOS
+        phys_limit = 1;
+#else
+        phys_limit = getenv("LARECOMP_PHYS_LIMIT") != NULL;
+#endif
+    }
     return heap_size + (phys_limit ? phys_mapped : 0) + 0x4000000ull;
 }
 
@@ -235,7 +241,9 @@ static void phys_unmap(uint64_t addr, uint64_t size) {
         if (r.addr + r.size > end) region_add(end, r.addr + r.size - end, 7, 3);
         i = -1;  // (the array changed: rescan; trimmed pieces no longer overlap)
     }
-#ifdef __linux__
+#if TARGET_OS_IOS
+    if (!plat_zero_guest(addr, size)) FATAL("cannot clear unmapped guest memory\n");
+#elif defined(__linux__)
     plat_reset_guest(addr, end);
 #else
     memset((void *)(uintptr_t)addr, 0, size);
@@ -329,13 +337,24 @@ static KThread *thread_new(uint64_t entry, uint64_t arg, uint64_t stack_top, int
     return t;
 }
 
-static void thread_start(KThread *t) {
+static int thread_start(KThread *t) {
     pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, 256ull << 20);  // guest recursion runs on the host stack
-    t->started = true;
-    pthread_create(&t->host, &attr, thread_main, t);
+    int err = pthread_attr_init(&attr);
+    if (err) return err;
+#if TARGET_OS_IOS
+    // Each worker reserves host stack space in addition to the compact guest mapping.
+    const size_t stack_size = 8ull << 20;
+#else
+    const size_t stack_size = 256ull << 20;  // guest recursion runs on the host stack
+#endif
+    err = pthread_attr_setstacksize(&attr, stack_size);
+    if (!err) {
+        t->started = true;
+        err = pthread_create(&t->host, &attr, thread_main, t);
+        if (err) t->started = false;
+    }
     pthread_attr_destroy(&attr);
+    return err;
 }
 
 KThread *kernel_create_main_thread(uint64_t entry, uint64_t stack_size, int prio) {
@@ -348,7 +367,8 @@ KThread *kernel_create_main_thread(uint64_t entry, uint64_t stack_size, int prio
 
 void kernel_run_main(KThread *t, uint64_t x0, uint64_t x1, uint64_t x2, uint64_t x3, uint64_t x4) {
     t->cpu.x[0] = x0; t->cpu.x[1] = x1; t->cpu.x[2] = x2; t->cpu.x[3] = x3; t->cpu.x[4] = x4;
-    thread_start(t);  // the host main thread goes on to run the window event loop
+    int err = thread_start(t);  // the host main thread goes on to run the window event loop
+    if (err) FATAL("cannot start the game thread: %s\n", strerror(err));
 }
 
 uint32_t kernel_current_thread_handle(void) { return t_cur ? t_cur->handle : 0; }
@@ -1067,8 +1087,10 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     case 0x09: {  // StartThread
         KObject *o = handle_get((uint32_t)x[0]);
         if (!o || o->type != KOBJ_THREAD) { x[0] = R_INVALID_HANDLE; break; }
-        thread_start((KThread *)o);
-        x[0] = R_OK;
+        int err = thread_start((KThread *)o);
+        if (err && devlog_on("kernel-ipc"))
+            devlog("kernel-ipc", "StartThread failed: %s", strerror(err));
+        x[0] = err ? R_OUT_OF_RESOURCE : R_OK;
         break;
     }
     case 0x0A: longjmp(t_cur->unwind, 1);  // ExitThread: back to thread_main, which signals the thread object
@@ -1243,6 +1265,12 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         break;
     }
     case 0x2C:  // MapPhysicalMemory(addr, size)
+#if TARGET_OS_IOS
+        if (x[0] < ALIAS_BASE || x[0] >= GUEST_HI || !x[1] || x[1] > GUEST_HI - x[0]) {
+            x[0] = R_INVALID_ADDRESS;
+            break;
+        }
+#endif
         if (ENV("LARECOMP_LOG_VAMM")) LOG("[kernel] MapPhysicalMemory %llx +%llx\n", x[0], x[1]);
         {
             if (used_memory() && phys_limit && used_memory() + phys_new_bytes(x[0], x[1]) > APP_MEMORY) {
@@ -1257,6 +1285,12 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         x[0] = R_OK;
         break;
     case 0x2D:  // UnmapPhysicalMemory(addr, size)
+#if TARGET_OS_IOS
+        if (x[0] < ALIAS_BASE || x[0] >= GUEST_HI || !x[1] || x[1] > GUEST_HI - x[0]) {
+            x[0] = R_INVALID_ADDRESS;
+            break;
+        }
+#endif
         if (ENV("LARECOMP_LOG_VAMM")) LOG("[kernel] UnmapPhysicalMemory %llx +%llx\n", x[0], x[1]);
         phys_unmap(x[0], x[1]);
         x[0] = R_OK;
@@ -1355,7 +1389,7 @@ static void wait_dump_stack(KThread *t) {
     LOG("[wait]       x0-x3 %llx %llx %llx %llx sp %llx%s%s\n", (unsigned long long)t->cpu.x[0], (unsigned long long)t->cpu.x[1],
         (unsigned long long)t->cpu.x[2], (unsigned long long)t->cpu.x[3], (unsigned long long)t->cpu.sp, hle ? " hle " : "",
         hle ? hle : "");
-    for (int i = 0; i < 16 && fp >= 0x7000000000ull && fp < 0x7800000000ull; i++) {
+    for (int i = 0; i < 16 && fp >= GUEST_LO && fp < GUEST_HI; i++) {
         uint64_t prev = LD64(fp), lr = LD64(fp + 8), off = 0, moff = 0;
         const char *sym = lr ? loader_symbol_at(lr, &off) : NULL, *mod = "?";
         for (int mi = 0; mi < g_nmodules; mi++)

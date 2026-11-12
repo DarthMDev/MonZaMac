@@ -3,6 +3,9 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 
 #include "cpu.h"
 #include "platform.h"
@@ -16,42 +19,60 @@ void rt_crash_explain(char *out, size_t n, const char *log_path);
 #define FATAL(...) (rt_fatal_msg(__VA_ARGS__), rt_fatal_trace())  // (runtime/crash_explain.c keeps the line)
 
 // ---- address space layout (guest addresses == host addresses)
-// Guest addresses must fit in 39 bits; the window starts at 0x70_0000_0000, above the region macOS reserves.
-// Two reservations (runtime/guest_layout.c). The low window, 7 GB at GUEST_LO: the images (their addresses are in the
-// generated code), the host-implemented functions, TLS, stacks and heap. The alias region: the SDK's virtual address
-// memory (Pokémon Legends Z-A reserves 12 GB in it), 16 GB, right behind the low window when the address space is free
-// there and in the first free hole below 2^39 when it is not (macOS 27 keeps two ~12 GB blocks of its own at random
-// places in 0x70_0000_0000..2^39, so one 32 GB window never fits). Pages are committed on first touch: address space only.
+// Keep the module bases identical so the same translated code and patches work on Apple hosts.
 #define GUEST_LO     0x7000000000ull
 #define GUEST_LOW_END 0x71C0000000ull
-#define GUEST_LIMIT  0x8000000000ull   // 2^39
-extern uint64_t g_alias_base, g_alias_size;
-#define MAIN_BASE    0x7000000000ull
-#define SDK_BASE     0x7008000000ull   // (128 MB for main: Pokémon Legends Z-A's image is 0x5f7a000)
-#define HLE_BASE     0x7080000000ull   // fake addresses for host-implemented functions
+#define GUEST_LIMIT  0x8000000000ull
+#define MAIN_BASE    GUEST_LO
+#define SDK_BASE     (MAIN_BASE + 0x08000000ull)
 #define HLE_SIZE     0x0000100000ull
 #define HLE_CODE_BASE (HLE_BASE + HLE_SIZE)
 #define HLE_CODE_STRIDE 64ull
 #define HLE_CODE_SIZE 0x40000ull
-#define TLS_BASE     0x7090000000ull
 #define TLS_SIZE     0x0000100000ull
-#define HLE_HEAP     0x7092000000ull   // guest-visible memory owned by host code
 #define HLE_HEAP_SIZE 0x000E000000ull
-#define ALIAS_BASE   g_alias_base      // alias region (svcMapMemory targets; an SDK's virtual address memory reserves its address regions here)
-#define ALIAS_SIZE   g_alias_size      // 16 GB
+#if TARGET_OS_IOS
+// iOS provides a 6 GiB window at the module base on the tested device. Pack the host-managed
+// regions into the first GiB. Z-A uses the SDK's virtual address memory, backed in the alias region.
+#define HLE_BASE     (GUEST_LO + 0x10000000ull)
+#define TLS_BASE     (GUEST_LO + 0x11000000ull)
+#define HLE_HEAP     (GUEST_LO + 0x12000000ull)
+#define STACK_BASE   (GUEST_LO + 0x20000000ull)
+#define STACK_SIZE   0x10000000ull
+#define HEAP_BASE    (GUEST_LO + 0x30000000ull)
+#define HEAP_MAX     0x10000000ull
+#define ALIAS_BASE   (GUEST_LO + 0x40000000ull)
+#define ALIAS_SIZE   0x140000000ull
+#define GUEST_HI     (ALIAS_BASE + ALIAS_SIZE)
+#else
+// The desktop leaves 16 GiB for the SDK's virtual address memory.
+#define HLE_BASE     0x7080000000ull
+#define TLS_BASE     0x7090000000ull
+#define HLE_HEAP     0x7092000000ull
+#define STACK_BASE   0x70A0000000ull
+#define STACK_SIZE   0x0040000000ull
 #define HEAP_BASE    0x70E0000000ull
-#define HEAP_MAX     0x00D0000000ull   // 3.25 GB, up to GUEST_LOW_END
-
+#define HEAP_MAX     0x00D0000000ull
+extern uint64_t g_alias_base, g_alias_size;
+#define ALIAS_BASE   g_alias_base
+#define ALIAS_SIZE   g_alias_size
+#endif
+#if TARGET_OS_IOS
+static inline bool guest_contains(uint64_t a, uint64_t n) {
+    return a >= GUEST_LO && a < GUEST_HI && n <= GUEST_HI - a;
+}
+static inline uint64_t guest_span_end(void) { return GUEST_HI; }
+#else
 // An address range inside memory the host reserved (the low window or the alias region).
 static inline bool guest_contains(uint64_t a, uint64_t n) {
     if (a >= GUEST_LO && a < GUEST_LOW_END) return n <= GUEST_LOW_END - a;
     return a >= g_alias_base && a - g_alias_base < g_alias_size && n <= g_alias_size - (a - g_alias_base);
 }
-// The end of the one reserved span that starts at GUEST_LO: both reservations when the alias region is right behind
-// the low window, else the low window alone. (What GetInfo reports as the ASLR region: all of it is memory we own.)
+// The end of the one reserved span that starts at GUEST_LO.
 static inline uint64_t guest_span_end(void) {
     return g_alias_base == GUEST_LOW_END ? g_alias_base + g_alias_size : GUEST_LOW_END;
 }
+#endif
 
 // ---- the game (kernel.c; set from exefs/main.npdm by main.c)
 extern uint64_t g_program_id;  // GetInfo 18, Pokémon Legends: Z-A's by default
@@ -71,6 +92,10 @@ extern int g_nmodules;
 void loader_load(const char *exefs_dir);  // (again after a reboot: modules are reloaded into wiped memory)
 uint64_t loader_find_symbol(const char *name);
 const char *loader_symbol_at(uint64_t addr, uint64_t *offset);
+
+// ---- guest_layout.c
+bool guest_reserve(void);
+bool guest_reset(void);
 
 // ---- dispatch.c
 typedef void (*HostFn)(Cpu *c);
@@ -100,10 +125,6 @@ Cpu *kernel_current_cpu(void);
 typedef struct Service Service;
 int ipc_handle_request(Cpu *c, uint32_t handle);
 uint32_t ipc_connect_named_port(const char *name);
-
-// ---- guest_layout.c
-bool guest_reserve(void);  // both reservations (the low window and the alias region); false: start again
-bool guest_reset(void);    // fresh zero pages over both
 
 // ---- in-place reboot (main.c): switch seeds or go back to the start screen without leaving the process
 enum { RT_REBOOT_NONE, RT_REBOOT_GAME, RT_REBOOT_TITLE };  // GAME: boot again at once (new seed); TITLE: start screen

@@ -23,6 +23,10 @@ bool plat_reserve_guest(uint64_t lo, uint64_t hi);
 void plat_commit(uint64_t addr, uint64_t size);
 // In-place reboot: every page of [lo, hi) back to zero (and unbacked), the window still claimed.
 bool plat_reset_guest(uint64_t lo, uint64_t hi);
+#if TARGET_OS_IOS
+// Zero a guest range without faulting in untouched host pages or replacing its backing object.
+bool plat_zero_guest(uint64_t addr, uint64_t size);
+#endif
 // Pages of [addr, addr+size) in the guest window the CPU wrote since the last call over them (write tracking: Windows
 // MEM_WRITE_WATCH), their addresses into pages[] (at most max), and the tracking reset for the range. Returns the
 // count (max: maybe more), or -1 where there is no tracking (macOS, Linux). Page size: *page.

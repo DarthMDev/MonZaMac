@@ -6,11 +6,21 @@
 
 #define GIB (1ull << 30)
 
+#if TARGET_OS_IOS
+uint64_t g_alias_base = ALIAS_BASE, g_alias_size = ALIAS_SIZE;
+#else
 uint64_t g_alias_base = GUEST_LOW_END, g_alias_size = 16 * GIB;  // (the alias region right behind the low window, unless it moved)
+#endif
 
 // Claim both reservations, before anything else can map there. false: the low window is taken, or no hole below 2^39
 // holds the alias region (the caller starts again: the system's own regions move at every launch).
 bool guest_reserve(void) {
+#if TARGET_OS_IOS
+    extern bool g_ios_guest_reserved;
+    if (g_ios_guest_reserved) return true;
+    g_ios_guest_reserved = plat_reserve_guest(GUEST_LO, GUEST_HI);
+    return g_ios_guest_reserved;
+#else
     // LARECOMP_IMITATE_MACOS27=1 (development): take the two ~12 GB blocks a macOS 27.0 start had there (measured in a
     // virtual machine) before anything else, so that the alias region has to go to a hole, as there, on any macOS.
     const char *imitate = getenv("LARECOMP_IMITATE_MACOS27");
@@ -30,9 +40,14 @@ bool guest_reserve(void) {
             return true;
         }
     return false;
+#endif
 }
 
 // Fresh zero pages over both reservations (an in-place reboot).
 bool guest_reset(void) {
+#if TARGET_OS_IOS
+    return plat_zero_guest(GUEST_LO, GUEST_HI - GUEST_LO);
+#else
     return plat_reset_guest(GUEST_LO, GUEST_LOW_END) && plat_reset_guest(g_alias_base, g_alias_base + g_alias_size);
+#endif
 }

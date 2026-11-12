@@ -214,6 +214,8 @@ int main(int argc, char **argv) {
     bool skip_launcher = false, play_flag = false, explicit_skip = false;
 #ifdef MONZA_IOS_PRIVATE_GAME
     g_ios_guest_reserved = plat_reserve_guest(GUEST_LO, GUEST_HI);
+    if (getenv("LARECOMP_IOS_BOOT_PROBE"))
+        LOG("[ios] guest address reservation: %s\n", g_ios_guest_reserved ? "ok" : "unavailable");
 #endif
     rt_paths_init();
 #else

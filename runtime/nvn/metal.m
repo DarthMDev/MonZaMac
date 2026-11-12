@@ -5,7 +5,9 @@
 // Metal renderer for the NVN layer: window, textures, command execution, presentation.
 #include <sys/stat.h>
 #include <TargetConditionals.h>
-#if !TARGET_OS_IOS
+#if TARGET_OS_IOS
+#include "ui/touch.h"
+#else
 #import <AppKit/AppKit.h>
 #endif
 #import <Metal/Metal.h>
@@ -1692,6 +1694,12 @@ void ui_window_init(void) {
     layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
     layer.maximumDrawableCount = 3;
     layer.framebufferOnly = getenv("LARECOMP_WINDOW_SHOT") ? NO : YES;
+#if TARGET_OS_SIMULATOR
+    if (getenv("LARECOMP_TOUCH_PREVIEW")) {
+        touch_preview(window);
+        exit(0);
+    }
+#endif
 }
 
 SDL_Window *ui_window(void) { return window; }
@@ -1710,11 +1718,26 @@ int ui_run(void) {
 #endif
     ui_window_init();
     atomic_store(&ui_ready, true);
+#if TARGET_OS_IOS
+    touch_start(window);
+    extern bool menu_input_captured(void);
+#endif
+    int result = RT_REBOOT_NONE;
     for (;;) {
-        if (rt_reboot_requested()) return rt_reboot_requested();  // (runtime/main.c tears the game down)
+        result = rt_reboot_requested();
+        if (result) break;  // runtime/main.c tears the game down
+#if TARGET_OS_IOS
+        touch_update(!SDL_HasGamepad() && !menu_input_captured());
+#endif
         SDL_Event e;
         while (SDL_WaitEventTimeout(&e, 16)) {
-            if (e.type == SDL_EVENT_QUIT) { LOG("window closed\n"); return RT_REBOOT_NONE; }
+            if (e.type == SDL_EVENT_QUIT) {
+                LOG("window closed\n");
+#if TARGET_OS_IOS
+                touch_stop();
+#endif
+                return RT_REBOOT_NONE;
+            }
             if (ui_preparation_update()) {
                 // Device lifecycle still reaches input handling; gameplay events remain modal.
                 if (e.type == SDL_EVENT_GAMEPAD_ADDED || e.type == SDL_EVENT_GAMEPAD_REMOVED) input_handle_event(&e);
@@ -1751,4 +1774,8 @@ int ui_run(void) {
         CGSize ds = CGSizeMake(w, h);
         if (w > 0 && h > 0 && !CGSizeEqualToSize(layer.drawableSize, ds)) layer.drawableSize = ds;
     }
+#if TARGET_OS_IOS
+    touch_stop();
+#endif
+    return result;
 }

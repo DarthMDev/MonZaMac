@@ -4,6 +4,12 @@
 // d-pad, K/J/L/I = A/B/X/Y, Q/E = L/R, 1/3 = ZL/ZR, Enter / Backspace = Plus / Minus, numpad 8/4/5/6 right stick;
 // controller by position, Switch A = east).
 #include <SDL3/SDL.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+#if TARGET_OS_IOS
+#include "../ui/touch.h"
+#endif
 #include <pthread.h>
 #include <ctype.h>
 #include <math.h>
@@ -548,8 +554,29 @@ void input_frame(uint64_t frame) {
 
 extern bool menu_input_captured(void);  // runtime/ui/menu.mm: overlay menu or name entry up (it has the keys / pad)
 
+#if TARGET_OS_IOS
+static _Atomic uint32_t touch_buttons;
+static _Atomic int32_t touch_lx, touch_ly, touch_rx, touch_ry;
+
+void input_touch_state(uint32_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
+    touch_buttons = buttons;
+    touch_lx = lx;
+    touch_ly = ly;
+    touch_rx = rx;
+    touch_ry = ry;
+}
+#endif
+
+static uint64_t player_buttons(void) {
+    uint64_t buttons = key_buttons | pad_buttons;
+#if TARGET_OS_IOS
+    buttons |= touch_buttons;
+#endif
+    return buttons;
+}
+
 // Buttons held right now (keyboard, gamepad, test script), independent of whether the game polls (movies).
-uint64_t input_buttons_now(void) { return (menu_input_captured() ? 0 : key_buttons | pad_buttons) | script_buttons; }
+uint64_t input_buttons_now(void) { return (menu_input_captured() ? 0 : player_buttons()) | script_buttons; }
 
 static int32_t clamp_axis(int32_t v) { return v > 32767 ? 32767 : v < -32767 ? -32767 : v; }
 
@@ -589,17 +616,33 @@ static void fill_state(Cpu *c) {
         LOG("[input] watching controller object %llx\n", c->x[1] - 8);
     }
     bool menu = menu_input_captured();  // the overlay menu / name entry has the controls (typing there isn't for the game)
-    uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | script_buttons;
+    uint64_t held = menu ? script_buttons : player_buttons() | script_buttons;
+    uint64_t b = held;
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)
         extern uint64_t renderer_present_count(void);
         static uint64_t until;
         if (g_inject_plus > 0) { until = renderer_present_count() + 10; g_inject_plus = 0; }
         if (renderer_present_count() < until) b |= 1ull << BTN_PLUS;
     }
-    int32_t lx = clamp_axis((menu ? 0 : key_lx + pad_lx) + script_lx), ly = clamp_axis((menu ? 0 : key_ly + pad_ly) + script_ly);
+    int32_t lx = script_lx, ly = script_ly, rx = script_rx, ry = script_ry;
     int32_t mrx, mry;
     mouse_stick(&mrx, &mry);
-    int32_t rx = clamp_axis((menu ? 0 : key_rx + pad_rx + mrx) + script_rx), ry = clamp_axis((menu ? 0 : key_ry + pad_ry + mry) + script_ry);
+    if (!menu) {
+        lx += key_lx + pad_lx;
+        ly += key_ly + pad_ly;
+        rx += key_rx + pad_rx + mrx;
+        ry += key_ry + pad_ry + mry;
+#if TARGET_OS_IOS
+        lx += touch_lx;
+        ly += touch_ly;
+        rx += touch_rx;
+        ry += touch_ry;
+#endif
+    }
+    lx = clamp_axis(lx);
+    ly = clamp_axis(ly);
+    rx = clamp_axis(rx);
+    ry = clamp_axis(ry);
     snap_to_axis(&rx, &ry, g_settings.rstick_snap);
     extern bool mirror_input(void);  // mirror mode, the world on screen (runtime/hle/mirror.c): left and right swap
     bool mirrored = !menu && mirror_input();
@@ -611,7 +654,7 @@ static void fill_state(Cpu *c) {
     // d-pad / arrow keys walk (setting) while the stick is at rest. "At rest" has a dead zone: a controller's stick
     // never reads exactly 0 (a DualSense rests at a few hundred), which used to turn the d-pad off altogether.
     if (!menu && g_settings.dpad_move && (int64_t)lx * lx + (int64_t)ly * ly < 8000ll * 8000) {
-        uint64_t d = key_buttons | pad_buttons | script_buttons;
+        uint64_t d = held;
         int dx = (int)((d >> BTN_RIGHT) & 1) - (int)((d >> BTN_LEFT) & 1);
         if (mirrored) dx = -dx;
         int dy = (int)((d >> BTN_UP) & 1) - (int)((d >> BTN_DOWN) & 1);

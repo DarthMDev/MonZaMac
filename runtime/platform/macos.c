@@ -31,12 +31,12 @@ void plat_init(void) {}
 
 bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
 #if TARGET_OS_IOS
-    // mmap treats the requested address as a hint without MAP_FIXED. Never overwrite another mapping.
-    void *want = (void *)(uintptr_t)lo;
-    void *map = mmap(want, hi - lo, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (map == want) return true;
-    if (map != MAP_FAILED) munmap(map, hi - lo);
-    return false;
+    // Request the exact range without replacing any existing mappings.
+    vm_address_t address = lo;
+    kern_return_t result = vm_allocate(mach_task_self(), &address, hi - lo, VM_FLAGS_FIXED);
+    if (result != KERN_SUCCESS && getenv("LARECOMP_IOS_BOOT_PROBE"))
+        LOG("[ios] fixed guest allocation: %s\n", mach_error_string(result));
+    return result == KERN_SUCCESS;
 #else
     // Everything readable/writable: macOS pages are 16K but the guest maps at 4K granularity.
     // Untouched pages cost nothing.
@@ -56,6 +56,24 @@ bool plat_reset_guest(uint64_t lo, uint64_t hi) {
     return mach_vm_allocate(mach_task_self(), &a, hi - lo, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE) == KERN_SUCCESS;
 #endif
 }
+
+#if TARGET_OS_IOS
+// The guest uses 4 KiB pages. Zero only its own bytes on each partial host page.
+bool plat_zero_guest(uint64_t addr, uint64_t size) {
+    uint64_t end = addr + size;
+    uint64_t first = (addr + PLAT_PAGE - 1) & ~(PLAT_PAGE - 1);
+    uint64_t last = end & ~(PLAT_PAGE - 1);
+    if (first >= last) {
+        memset((void *)(uintptr_t)addr, 0, size);
+        return true;
+    }
+    // Preserve the mapping for Metal while avoiding faults on pages never touched.
+    if (madvise((void *)(uintptr_t)first, last - first, MADV_ZERO) != 0) return false;
+    memset((void *)(uintptr_t)addr, 0, first - addr);
+    memset((void *)(uintptr_t)last, 0, end - last);
+    return true;
+}
+#endif
 
 void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 

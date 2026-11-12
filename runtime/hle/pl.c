@@ -12,6 +12,9 @@
 #include <strings.h>
 
 #include "../hle.h"
+#if TARGET_OS_IOS
+#include "../paths.h"
+#endif
 #include "../settings.h"
 #include <SDL3/SDL_gamepad.h>
 
@@ -152,6 +155,12 @@ static void load_fonts(void) {
                          "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf"};
     for (size_t i = 0; i < sizeof std / sizeof *std && !fonts[0].addr; i++)
         if (std[i]) load_one(std[i], &fonts[0]);
+#if TARGET_OS_IOS
+    // Use the bundled open font when the system font files are unavailable to the app.
+    char bundled_font[1024];
+    if (!fonts[0].addr && rt_resource("Baloo2-SemiBold.ttf", NULL, bundled_font, sizeof bundled_font))
+        load_one(bundled_font, &fonts[0]);
+#endif
     if (!fonts[0].addr) FATAL("no usable system font substitute\n");
     // Xbox prompts (setting prompts = xbox, or auto with an Xbox controller): the button glyphs relabelled
     // (tools/za/xbox_font.py). Keyboard prompts (auto with no controller connected at boot): the glyphs drawn as keys

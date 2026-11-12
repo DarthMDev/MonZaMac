@@ -120,6 +120,10 @@ class Module:
 
     def jump_table(self, br_pc, entry, end):
         """Resolve `br xN` targets from a bounds-checked jump table, or None."""
+        # Unicorn's macOS ARM64 JIT can fail on some host releases. In that case
+        # leave indirect branches unresolved and let the normal dispatcher handle them.
+        if os.environ.get('LARECOMP_NO_JUMPTABLE_EMU'):
+            return None
         r = self._jump_table_fallthrough(br_pc, entry, end)
         if r is None:
             r = self._jump_table_taken(br_pc, entry, end)

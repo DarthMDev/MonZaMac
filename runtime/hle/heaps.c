@@ -162,6 +162,16 @@ HLE_FUNC("_ZN2nn2os29IsVirtualAddressMemoryEnabledEv", heap_dbg_va_enabled) {
 HLE_FUNC("_ZN2nn3mem17StandardAllocator10InitializeEPvmb", heap_std_init_b) {
     static int n_;
     uint64_t lr = c->x[30], size = c->x[2];
+#if TARGET_OS_IOS
+    // The game asks its SDK for 12 GiB of virtual space with no backing buffer.
+    // Leave part of the 5 GiB alias region for the SDK's bookkeeping and other reservations.
+    const uint64_t max_reservation = ALIAS_SIZE - (1536ull << 20);
+    if (!c->x[1] && size > max_reservation) {
+        if (ENV("LARECOMP_IOS_BOOT_PROBE"))
+            LOG("[ios] limiting allocator reservation to %llu MiB\n", (unsigned long long)(max_reservation >> 20));
+        size = c->x[2] = max_reservation;
+    }
+#endif
     if (n_++ < 8)
         LOG("[heapdbg] StandardAllocator::Initialize(this=%llx mem=%llx size=%#llx b=%llu lr=%llx)\n",
             (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)size,

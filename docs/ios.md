@@ -23,6 +23,16 @@ xcrun simctl install booted build/ios/iphonesimulator/app/MonZaMac.app
 xcrun simctl launch booted com.monzamac.ios
 ```
 
+To inspect the touch controls without game files, launch the simulator app with
+`SIMCTL_CHILD_LARECOMP_TOUCH_PREVIEW=1` (terminate a running instance first):
+
+```sh
+SIMCTL_CHILD_LARECOMP_TOUCH_PREVIEW=1 xcrun simctl launch booted com.monzamac.ios
+```
+
+In gameplay, the overlay hides when a controller is connected. The gear stays
+available to open the in-game settings.
+
 ## Private offline build (experimental)
 
 Prepare your own v2.0.2 game and Mega Dimension DLC on the Mac using MonZaMac's
@@ -44,10 +54,21 @@ this app, its inputs, or any generated output. A normal build without
 `IOS_GAME_ROOT` restores the preview.
 
 The device build and the static table link can be checked without a real game.
-Gameplay requires a signed physical-device run with the matching files. Check
-guest address reservation first; simulator behavior cannot establish device
-behavior. Then check the GPU buffer size, offline boot and memory pressure before
-adding mobile gameplay controls.
+The iPhone 17 Pro accepted a 6 GiB window at the original module base with
+Personal Team signing. The iOS runtime packs its host-managed regions into
+the first GiB and gives the guest SDK the remaining 5 GiB for its alias region.
+The kernel caps physical allocations at the guest's application memory budget
+and rejects mappings outside the alias region. The runtime limits the SDK's
+initial allocator reservation to 3.5 GiB and clears unmapped pages without
+faulting in untouched memory. The main and SDK module bases stay the same,
+so the port can reuse the generated code and patches. Set
+`LARECOMP_IOS_BOOT_PROBE=1` in the launch environment to log whether the
+reservation succeeded.
+
+With the compact layout, smaller host thread stacks and the bundled open
+font as a fallback, the private v2.0.2 build reached the game's offline language
+selection screen on an iPhone 17 Pro. In-game controls, longer sessions, and
+online play still need testing.
 
 ## Online milestone
 
